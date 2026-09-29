@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ServiceManagement
 import SwiftUI
 import WorklogCore
 
@@ -56,9 +57,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.updateStatus() }
             .store(in: &bag)
 
-        // Debug: WORKLOG_SNAPSHOT=1 shows the popover content in a window for screenshots.
-        if let path = ProcessInfo.processInfo.environment["WORKLOG_SNAPSHOT"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.snapshotPopover(to: path) }
+        // Debug: WORKLOG_SNAPSHOT=1 shows the popover content in a window for screenshots;
+        // WORKLOG_SNAPSHOT=page:<name> opens the main window on that page.
+        if let value = ProcessInfo.processInfo.environment["WORKLOG_SNAPSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                if value.hasPrefix("page:") {
+                    self.openWindow(search: false)
+                    self.nav.doc = .page(String(value.dropFirst(5)))
+                } else {
+                    self.snapshotPopover(to: value)
+                }
+            }
+        }
+
+        // Timers left running while the Mac sleeps would count the whole night.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopTimersForSleep() }
+        }
+        Self.registerLoginItemOnFirstInstall()
+        if ProcessInfo.processInfo.environment["WORKLOG_SIMULATE_SLEEP"] == "1" {
+            // Debug: deliver the same notification macOS sends before sleeping.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+            }
         }
 
         // Control Option L
@@ -96,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             w.title = "Worklog"
             w.isReleasedWhenClosed = false
-            w.contentViewController = NSHostingController(rootView: MainWindowView(model: model, nav: nav))
+            w.contentViewController = NSHostingController(rootView: MainWindowView(model: model, nav: nav, notes: notes))
             w.setFrameAutosaveName("WorklogMain")
             if !w.setFrameUsingName("WorklogMain") { w.center() }
             window = w
@@ -105,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nav.focusSearch += 1
         } else {
             nav.query = ""
-            nav.day = Calendar.current.startOfDay(for: Date())
+            nav.doc = .day(Calendar.current.startOfDay(for: Date()))
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -120,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
             // A grouped Form has no intrinsic height; without this the window is just a title bar.
-            w.setContentSize(NSSize(width: 480, height: 500))
+            w.setContentSize(NSSize(width: 480, height: 580))
             w.center()
             settingsWindow = w
         }
@@ -139,6 +162,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = view
         window.center()
         window.orderFrontRegardless()
+    }
+
+    private func stopTimersForSleep() {
+        guard UserDefaults.standard.object(forKey: "stopOnSleep") as? Bool ?? true else { return }
+        let now = Date()
+        let stopped = model.stopAll(at: now)
+        if stopped > 0 {
+            let s = stopped == 1 ? "timer" : "timers"
+            model.notice = "Stopped \(stopped) \(s) at \(DayFile.clock(DayFile.minutesSinceMidnight(now))) when the Mac slept"
+        }
+    }
+
+    /// The first time Worklog runs from /Applications, turn on Open at Login. After that the
+    /// Settings toggle decides.
+    private static func registerLoginItemOnFirstInstall() {
+        guard Bundle.main.bundlePath.hasPrefix("/Applications/"),
+              !UserDefaults.standard.bool(forKey: "loginItemInitialised") else { return }
+        UserDefaults.standard.set(true, forKey: "loginItemInitialised")
+        try? SMAppService.mainApp.register()
     }
 
     private func revealFolder() {

@@ -126,6 +126,26 @@ public enum DayFile {
         return lines.joined(separator: "\n")
     }
 
+    /// Replaces one entry's line with `newLine`, or deletes it when `newLine` is nil. The entry is
+    /// found by start time and text, like `stopping`. Returns nil when it is not there any more.
+    public static func replacing(start: Int, text entryText: String, in text: String, with newLine: String?) -> String? {
+        guard let e = entries(in: text).first(where: { $0.start == start && $0.text == entryText }) else { return nil }
+        var lines = text.components(separatedBy: "\n")
+        if let newLine { lines[e.lineIndex] = newLine } else { lines.remove(at: e.lineIndex) }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Parses a line typed by hand, with or without the leading `- `, and normalises it:
+    /// `10:05-11:20 fixed it` gets its `(1h15)` duration filled in. Nil when it is not a log line.
+    public static func normalisedLine(_ raw: String) -> String? {
+        var line = raw.trimmingCharacters(in: .whitespaces)
+        if !line.hasPrefix("- ") { line = "- " + line }
+        guard let e = entry(from: line, at: 0), !e.text.isEmpty else { return nil }
+        if e.isRunning { return runningLine(at: e.start, e.text) }
+        if let end = e.end { return finishedLine(start: e.start, end: end, e.text) }
+        return pointLine(at: e.start, e.text)
+    }
+
     // MARK: Time helpers
 
     public static func span(from start: Int, to end: Int) -> Int {

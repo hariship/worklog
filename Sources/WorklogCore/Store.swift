@@ -72,21 +72,80 @@ public struct Store {
             .sorted(by: >)
     }
 
+    // MARK: Pages
+
+    public var pagesDir: URL { root.appendingPathComponent("pages", isDirectory: true) }
+
+    /// `Quilt Ops` -> `pages/Quilt Ops.md`. Only `/` and `:` are replaced; the file name is the title.
+    public func pageURL(_ name: String) -> URL {
+        let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        return pagesDir.appendingPathComponent("\(safe).md")
+    }
+
+    public func readPage(_ name: String) -> String? {
+        try? String(contentsOf: pageURL(name), encoding: .utf8)
+    }
+
+    public func writePage(_ text: String, name: String) throws {
+        try FileManager.default.createDirectory(at: pagesDir, withIntermediateDirectories: true)
+        try text.write(to: pageURL(name), atomically: true, encoding: .utf8)
+    }
+
+    public static func pageTemplate(_ name: String) -> String { "# \(name)\n\n" }
+
+    /// Page names, alphabetical.
+    public func pages() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: pagesDir.path)) ?? [])
+            .filter { $0.hasSuffix(".md") }
+            .map { String($0.dropLast(3)) }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    public func read(_ doc: Doc) -> String? {
+        switch doc {
+        case let .day(date): return read(date)
+        case let .page(name): return readPage(name)
+        }
+    }
+
+    public func template(_ doc: Doc) -> String {
+        switch doc {
+        case let .day(date): return DayFile.template(for: date)
+        case let .page(name): return Self.pageTemplate(name)
+        }
+    }
+
+    // MARK: Search and backlinks
+
     public struct Hit: Identifiable {
         public let id = UUID()
-        public let date: Date
+        public let doc: Doc
         public let line: String
     }
 
-    /// Case-insensitive line search across every day file, newest first.
+    /// Every document, newest days first, then pages.
+    private func allDocs() -> [(Doc, String)] {
+        days().compactMap { d in read(d).map { (.day(d), $0) } }
+            + pages().compactMap { p in readPage(p).map { (.page(p), $0) } }
+    }
+
+    /// Case-insensitive line search across every day and page.
     public func search(_ query: String, limit: Int = 200) -> [Hit] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
+        return lines(limit: limit) { $0.localizedCaseInsensitiveContains(q) }
+    }
+
+    /// Lines anywhere else that link to page `name` with `[[name]]` or its `#tag`.
+    public func backlinks(to name: String, limit: Int = 300) -> [Hit] {
+        lines(limit: limit, skipping: .page(name)) { Links.line($0, mentions: name) }
+    }
+
+    private func lines(limit: Int, skipping: Doc? = nil, where match: (String) -> Bool) -> [Hit] {
         var hits: [Hit] = []
-        for day in days() {
-            guard let text = read(day) else { continue }
-            for line in text.components(separatedBy: "\n") where line.localizedCaseInsensitiveContains(q) {
-                hits.append(Hit(date: day, line: line.trimmingCharacters(in: .whitespaces)))
+        for (doc, text) in allDocs() where doc != skipping {
+            for line in text.components(separatedBy: "\n") where match(line) {
+                hits.append(Hit(doc: doc, line: line.trimmingCharacters(in: .whitespaces)))
                 if hits.count >= limit { return hits }
             }
         }
