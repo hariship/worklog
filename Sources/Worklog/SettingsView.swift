@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 import WorklogCore
 
@@ -9,11 +10,20 @@ struct SettingsView: View {
     @State private var clientId = ""
     @State private var clientSecret = ""
     @State private var note: String?
+    @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var loginError: String?
+    @AppStorage("stopOnSleep") private var stopOnSleep = true
 
     var body: some View {
         Form {
-            Section("Notes folder") {
-                Text(root.path).textSelection(.enabled).foregroundStyle(.secondary)
+            Section("General") {
+                Toggle("Open at login", isOn: $openAtLogin)
+                    .onChange(of: openAtLogin) { _, on in setOpenAtLogin(on) }
+                if let loginError { Text(loginError).font(.caption).foregroundStyle(.orange) }
+                Toggle("Stop running timers when the Mac sleeps", isOn: $stopOnSleep)
+                LabeledContent("Notes folder") {
+                    Text(root.path).textSelection(.enabled).foregroundStyle(.secondary)
+                }
             }
 
             Section("Apple Notes") {
@@ -46,8 +56,18 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 500)
+        .frame(width: 480, height: 580)
         .onAppear { clientId = tick.clientId }
+    }
+
+    private func setOpenAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginError = nil
+        } catch {
+            loginError = "\(error.localizedDescription) Install to /Applications first (scripts/install.sh)."
+        }
+        openAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     @ViewBuilder private var statusRow: some View {

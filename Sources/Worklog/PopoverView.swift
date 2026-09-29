@@ -17,6 +17,10 @@ struct PopoverView: View {
     @AppStorage("weeklyChip") private var weekly = true
     @State private var flash: (text: String, isError: Bool)?
     @FocusState private var inputFocused: Bool
+    /// The line being edited in place, as `HH:mm[-HH:mm] text`.
+    @State private var editing: (entry: Entry, day: Date)?
+    @State private var editText = ""
+    @FocusState private var editFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,6 +29,10 @@ struct PopoverView: View {
             if !model.running.isEmpty {
                 Divider()
                 timers
+            }
+            if let last = model.lastEntry {
+                Divider()
+                lastRow(last)
             }
             if let error = model.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
@@ -37,8 +45,13 @@ struct PopoverView: View {
             if let m = notes.message { show(m.text, isError: m.isError) }
         }
         .onAppear {
+            if let notice = model.notice {
+                model.notice = nil
+                DispatchQueue.main.async { show(notice) }
+            }
             inputFocused = true
             tick.refresh(minAge: 60)
+            notes.refreshNoteNames()
         }
     }
 
@@ -71,6 +84,39 @@ struct PopoverView: View {
 
     /// Empty input: TickTick tasks due today. Typing: open tasks that match.
     @ViewBuilder private var suggestions: some View {
+        if let partial = Links.openLinkPrefix(before: draft) {
+            linkSuggestions(partial)
+        } else {
+            taskSuggestions
+        }
+    }
+
+    /// After `[[`: pages and Apple Notes to link. Clicking one closes the link.
+    @ViewBuilder private func linkSuggestions(_ partial: String) -> some View {
+        let targets = Links.completions(for: partial, pages: model.store.pages(), notes: notes.noteNames)
+        VStack(alignment: .leading, spacing: 0) {
+            if targets.isEmpty && !partial.isEmpty {
+                Text("New page \"\(partial)\" when you close with ]]").font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 3)
+            }
+            ForEach(targets, id: \.self) { target in
+                Button {
+                    draft = String(draft.dropLast(partial.count)) + target + "]] "
+                    inputFocused = true
+                } label: {
+                    Label(target, systemImage: Links.noteName(target) == nil ? "doc.text" : "note.text")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14).padding(.vertical, 3)
+            }
+        }
+        .font(.callout)
+        .padding(.bottom, 8)
+    }
+
+    @ViewBuilder private var taskSuggestions: some View {
         let typing = !draft.trimmingCharacters(in: .whitespaces).isEmpty
         let tasks = typing ? tick.matches(draft) : Array(tick.today.prefix(4))
         if !tasks.isEmpty {
@@ -110,29 +156,111 @@ struct PopoverView: View {
     private var timers: some View {
         VStack(spacing: 0) {
             ForEach(model.running) { timer in
-                HStack(spacing: 8) {
-                    Circle().fill(Color.green).frame(width: 7, height: 7)
-                    Text(timer.entry.text).lineLimit(1)
-                    Spacer(minLength: 6)
-                    Text(DayFile.duration(model.elapsed(timer))).monospacedDigit().foregroundStyle(.secondary)
-                    Button { model.stop(timer) } label: { Image(systemName: "stop.fill") }
-                        .buttonStyle(.borderless).help("Stop this timer")
+                if editing?.entry == timer.entry {
+                    editField
+                } else {
+                    HStack(spacing: 8) {
+                        Circle().fill(Color.green).frame(width: 7, height: 7)
+                        Text(timer.entry.text).lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(DayFile.duration(model.elapsed(timer))).monospacedDigit().foregroundStyle(.secondary)
+                        Button { model.stop(timer) } label: { Image(systemName: "stop.fill") }
+                            .buttonStyle(.borderless).help("Stop this timer")
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                    .contextMenu { entryMenu(timer.entry, day: timer.day) }
                 }
-                .font(.callout)
-                .padding(.horizontal, 14).padding(.vertical, 6)
             }
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: Last line, edit and delete
+
+    @ViewBuilder private func lastRow(_ e: Entry) -> some View {
+        if editing?.entry == e {
+            editField
+        } else {
+            HStack(spacing: 8) {
+                Text("last").font(.caption).foregroundStyle(.tertiary)
+                Text(DayFile.clock(e.start)).monospacedDigit().foregroundStyle(.secondary)
+                Text(e.text).lineLimit(1).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if let m = e.minutes { Text(DayFile.duration(m)).monospacedDigit().foregroundStyle(.tertiary) }
+                Button { beginEdit(e, day: model.today) } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless).help("Edit")
+                Button { delete(e, day: model.today) } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless).help("Delete")
+            }
+            .font(.callout)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .contextMenu { entryMenu(e, day: model.today) }
+        }
+    }
+
+    @ViewBuilder private func entryMenu(_ e: Entry, day: Date) -> some View {
+        Button("Edit") { beginEdit(e, day: day) }
+        Button("Delete", role: .destructive) { delete(e, day: day) }
+    }
+
+    /// The line as you'd type it: `10:05-11:20 text`. The duration is recomputed on save.
+    private func rawLine(_ e: Entry) -> String {
+        let time = e.isRunning ? "\(DayFile.clock(e.start))-"
+            : e.end.map { "\(DayFile.clock(e.start))-\(DayFile.clock($0))" } ?? DayFile.clock(e.start)
+        return "\(time) \(e.text)"
+    }
+
+    private var editField: some View {
+        HStack(spacing: 8) {
+            TextField("10:05-11:20 what you did #tag", text: $editText)
+                .textFieldStyle(.roundedBorder)
+                .focused($editFocused)
+                .onSubmit(saveEdit)
+                .onExitCommand { editing = nil }
+            Button("Save", action: saveEdit).keyboardShortcut(.defaultAction)
+        }
+        .font(.callout)
+        .padding(.horizontal, 14).padding(.vertical, 6)
+    }
+
+    private func beginEdit(_ e: Entry, day: Date) {
+        editText = rawLine(e)
+        editing = (e, day)
+        DispatchQueue.main.async { editFocused = true }
+    }
+
+    private func saveEdit() {
+        guard let editing else { return }
+        if model.edit(editing.entry, on: editing.day, to: editText) {
+            self.editing = nil
+            show("Saved")
+        } else {
+            show("Start with a time, like 10:05 or 10:05-11:20", isError: true)
+        }
+    }
+
+    private func delete(_ e: Entry, day: Date) {
+        editing = nil
+        model.delete(e, on: day)
     }
 
     // MARK: Footer
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Text(flash?.text ?? "\(DayFile.duration(model.todayMinutes)) today")
-                .foregroundStyle(flash == nil ? Color.secondary : flash!.isError ? Color.red : Color.green)
-                .lineLimit(2)
-                .monospacedDigit()
+            if let undo = model.undo, flash == nil {
+                Text("Deleted").foregroundStyle(.secondary)
+                Button("Undo") { model.undoDelete() }.buttonStyle(.link)
+                    .help("Put back \"\(undo.label)\"")
+            } else {
+                Text(flash?.text ?? "\(DayFile.duration(model.todayMinutes)) today")
+                    .foregroundStyle(flash == nil ? Color.secondary : flash!.isError ? Color.red : Color.green)
+                    .lineLimit(2)
+                    .monospacedDigit()
+            }
             Spacer()
             Button("Open log", systemImage: "arrow.up.right.square", action: openDay)
                 .buttonStyle(.borderless)
@@ -176,6 +304,6 @@ struct PopoverView: View {
     /// Point entries don't show in the popover any more, so confirm them briefly in the footer.
     private func show(_ message: String, isError: Bool = false) {
         flash = (message, isError)
-        DispatchQueue.main.asyncAfter(deadline: .now() + (isError ? 6 : 2)) { if flash?.text == message { flash = nil } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isError || message.count > 30 ? 6 : 2)) { if flash?.text == message { flash = nil } }
     }
 }

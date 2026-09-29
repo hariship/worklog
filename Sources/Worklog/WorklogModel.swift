@@ -16,6 +16,10 @@ final class WorklogModel: ObservableObject {
     /// Bumped on every write so open editors know to reload.
     @Published private(set) var revision = 0
     @Published var lastError: String?
+    /// Something to tell you next time the popover opens, e.g. timers stopped while the Mac slept.
+    @Published var notice: String?
+    /// The file text before the last delete, so it can be undone.
+    @Published private(set) var undo: (day: Date, text: String, label: String)?
     /// Called after a line is written, with its text (used to forward `#weekly` lines).
     var onLogged: ((String) -> Void)?
 
@@ -43,6 +47,7 @@ final class WorklogModel: ObservableObject {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         let at = Date()
+        undo = nil
         let minute = DayFile.minutesSinceMidnight(at)
         let line = startTimer ? DayFile.runningLine(at: minute, text) : DayFile.pointLine(at: minute, text)
         write(at) { DayFile.appending(line, to: $0) }
@@ -54,10 +59,51 @@ final class WorklogModel: ObservableObject {
         write(timer.day) { DayFile.stopping(start: timer.entry.start, text: timer.entry.text, in: $0, at: end) }
     }
 
-    /// Saves text from the main window editor. Does not create a file for an untouched template.
-    func save(_ text: String, for day: Date) {
-        if store.read(day) == nil, text == DayFile.template(for: day) { return }
-        write(day) { _ in text }
+    /// Replaces a line with what was typed (`10:05-11:20 fixed it`). False when it doesn't parse.
+    func edit(_ entry: Entry, on day: Date, to raw: String) -> Bool {
+        guard let line = DayFile.normalisedLine(raw) else { return false }
+        write(day) { DayFile.replacing(start: entry.start, text: entry.text, in: $0, with: line) }
+        return true
+    }
+
+    func delete(_ entry: Entry, on day: Date) {
+        if let before = store.read(day) { undo = (day, before, entry.text) }
+        write(day) { DayFile.replacing(start: entry.start, text: entry.text, in: $0, with: nil) }
+    }
+
+    func undoDelete() {
+        guard let undo else { return }
+        self.undo = nil
+        write(undo.day) { _ in undo.text }
+    }
+
+    /// Stops every running timer at `at`. Returns how many were stopped.
+    @discardableResult
+    func stopAll(at: Date) -> Int {
+        let timers = running
+        for t in timers { stop(t, at: at) }
+        return timers.count
+    }
+
+    /// The most recently written line today that is not a running timer.
+    var lastEntry: Entry? { entries.last { !$0.isRunning } }
+
+    /// Saves text from the main window editor. An untouched template is not written unless `force`,
+    /// so browsing days or following a link to a new page leaves no empty files behind.
+    func save(_ text: String, for doc: Doc, force: Bool = false) {
+        if !force, store.read(doc) == nil, text == store.template(doc) { return }
+        switch doc {
+        case let .day(day):
+            write(day) { _ in text }
+        case let .page(name):
+            do {
+                try store.writePage(text, name: name)
+                lastError = nil
+            } catch {
+                lastError = "Could not save: \(error.localizedDescription)"
+            }
+            revision += 1
+        }
     }
 
     // MARK: Derived

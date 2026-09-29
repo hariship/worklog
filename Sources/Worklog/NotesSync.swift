@@ -24,6 +24,37 @@ final class NotesSync: ObservableObject {
         }
     }
 
+    // MARK: Links to notes
+
+    /// Note titles for `[[notes:` completion, fetched in the background and cached for 10 minutes.
+    @Published private(set) var noteNames: [String] = []
+    private var namesFetched: Date?
+
+    func refreshNoteNames() {
+        if let namesFetched, Date().timeIntervalSince(namesFetched) < 600 { return }
+        namesFetched = Date()
+        queue.async {
+            let names = (try? Self.run(#"tell application "Notes" to get name of every note"#))?
+                .components(separatedBy: ", ") ?? []
+            DispatchQueue.main.async { self.noteNames = Array(Set(names)).sorted() }
+        }
+    }
+
+    /// Opens a note in Apple Notes by title.
+    func open(_ name: String) {
+        queue.async {
+            let result = Result { try Self.run("""
+            tell application "Notes"
+                show first note whose name is "\(Self.quote(name))"
+                activate
+            end tell
+            """) }
+            if case let .failure(error) = result {
+                DispatchQueue.main.async { self.say(error.localizedDescription, isError: true) }
+            }
+        }
+    }
+
     // MARK: Live #weekly lines
 
     func appendItem(_ logText: String) {
