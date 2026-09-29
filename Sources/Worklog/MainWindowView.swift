@@ -34,6 +34,7 @@ struct MainWindowView: View {
         }
         .onChange(of: model.revision) { refresh() }
         .onChange(of: nav.focusSearch) { searchFocused = true }
+        .onChange(of: nav.newPageRequest) { askingForPage = true }
         .alert("New page", isPresented: $askingForPage) {
             TextField("Page name", text: $newPageName)
             Button("Create") { createPage() }
@@ -54,6 +55,16 @@ struct MainWindowView: View {
                     Button { askingForPage = true } label: { Image(systemName: "plus") }
                         .buttonStyle(.borderless).help("New page")
                 }
+            }
+            Section("Apple Notes") {
+                // Opens in Notes rather than here; `[[notes:Name]]` links do the same.
+                Button { notes.open(notes.noteName) } label: {
+                    Label(notes.noteName, systemImage: "note.text")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open in Apple Notes")
             }
             Section("Days") {
                 ForEach(days, id: \.self) { day in
@@ -242,4 +253,6 @@ final class Navigation: ObservableObject {
     @Published var doc: Doc = .day(Calendar.current.startOfDay(for: Date()))
     @Published var query = ""
     @Published var focusSearch = 0
+    /// Bumped by File > New Page.
+    @Published var newPageRequest = 0
 }

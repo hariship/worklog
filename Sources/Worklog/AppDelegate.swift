@@ -5,7 +5,7 @@ import SwiftUI
 import WorklogCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let model = WorklogModel()
     private let nav = Navigation()
     private let tick = TickTickModel()
@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        NSApp.mainMenu = Self.editMenu()
+        NSApp.mainMenu = mainMenu()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // Remembers where you Command-drag it, instead of landing leftmost (under the notch) each launch.
@@ -43,6 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onLogged = { [weak self] text in
             if DayFile.tags(in: text).contains(NotesHTML.weeklyTag) { self?.notes.appendItem(text) }
         }
+        // Opened by you (Spotlight, Finder, Dock): show the window. At login: stay in the menu bar.
+        let debug = ["WORKLOG_SELFTEST", "WORKLOG_SNAPSHOT", "WORKLOG_SIMULATE_SLEEP"]
+            .contains { ProcessInfo.processInfo.environment[$0] != nil }
+        if !launchedAtLogin && !debug {
+            DispatchQueue.main.async { self.openWindow(search: false) }
+        }
+
         if ProcessInfo.processInfo.environment["WORKLOG_SELFTEST"] == "1" {
             // Debug: exercise the real #weekly and week-summary paths against $WORKLOG_NOTE, then quit.
             model.log("Worklog self-test line #weekly", startTimer: false)
@@ -120,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.title = "Worklog"
             w.isReleasedWhenClosed = false
             w.contentViewController = NSHostingController(rootView: MainWindowView(model: model, nav: nav, notes: notes))
+            w.delegate = self
             w.setFrameAutosaveName("WorklogMain")
             if !w.setFrameUsingName("WorklogMain") { w.center() }
             window = w
@@ -130,9 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nav.query = ""
             nav.doc = .day(Calendar.current.startOfDay(for: Date()))
         }
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-        window?.orderFrontRegardless()
+        show(window)
     }
 
     private func openSettings() {
@@ -144,12 +150,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.isReleasedWhenClosed = false
             // A grouped Form has no intrinsic height; without this the window is just a title bar.
             w.setContentSize(NSSize(width: 480, height: 580))
+            w.delegate = self
             w.center()
             settingsWindow = w
         }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        settingsWindow?.orderFrontRegardless()
+        show(settingsWindow)
     }
 
     /// Shows the popover content in a plain window titled "Worklog Snapshot" so it can be screenshotted.
@@ -189,28 +194,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(model.store.root)
     }
 
-    /// Accessory apps have no menu bar, but key equivalents still route through the main menu:
-    /// without this, copy, paste and undo do nothing in the editor.
-    private static func editMenu() -> NSMenu {
-        let main = NSMenu()
-        let appItem = NSMenuItem()
-        appItem.submenu = NSMenu()
-        appItem.submenu?.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        appItem.submenu?.addItem(withTitle: "Quit Worklog", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        main.addItem(appItem)
+    // MARK: Dock and windows
 
-        let editItem = NSMenuItem()
-        let edit = NSMenu(title: "Edit")
-        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
-        redo.keyEquivalentModifierMask = [.command, .shift]
-        edit.addItem(.separator())
-        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-        edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-        editItem.submenu = edit
-        main.addItem(editItem)
+    /// Become a Dock app first, then activate, then bring the window up. In any other order the
+    /// window can end up created but off screen.
+    private func show(_ w: NSWindow?) {
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        NSApp.activate(ignoringOtherApps: true)
+        w?.makeKeyAndOrderFront(nil)
+    }
+
+    /// A Dock icon and Command Tab while a window is open; menu bar only otherwise.
+    private func updateDockPresence() {
+        let anyOpen = [window, settingsWindow].contains { $0?.isVisible == true }
+        let policy: NSApplication.ActivationPolicy = anyOpen ? .regular : .accessory
+        guard NSApp.activationPolicy() != policy else { return }
+        NSApp.setActivationPolicy(policy)
+        if anyOpen { NSApp.activate(ignoringOtherApps: true) }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        // isVisible is still true inside willClose.
+        DispatchQueue.main.async { self.updateDockPresence() }
+    }
+
+    /// Clicking the Dock icon, or opening Worklog again from Spotlight, shows the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if window?.isVisible != true { openWindow(search: false) }
+        return true
+    }
+
+    private var launchedAtLogin = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // The launch Apple Event says whether this is a login launch. As a fallback, a launch in the
+        // first two minutes after boot is treated as one too.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let loginItem = event?.eventID == kAEOpenApplication
+            && event?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        launchedAtLogin = loginItem || ProcessInfo.processInfo.systemUptime < 120
+    }
+
+    @objc private func menuNewPage() { openWindow(search: false); nav.newPageRequest += 1 }
+    @objc private func menuToday() { openWindow(search: false) }
+    @objc private func menuSearch() { openWindow(search: true) }
+    @objc private func menuSettings() { openSettings() }
+    @objc private func menuOpenNote() { notes.open(notes.noteName) }
+
+    private func mainMenu() -> NSMenu {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let item = NSMenuItem()
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            item.submenu = menu
+            main.addItem(item)
+        }
+        func item(_ title: String, _ action: Selector, _ key: String, _ mods: NSEvent.ModifierFlags = .command,
+                  target: AnyObject? = nil, tag: Int = 0) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            i.keyEquivalentModifierMask = mods
+            i.target = target
+            i.tag = tag
+            return i
+        }
+        submenu("Worklog", [
+            item("About Worklog", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+            .separator(),
+            item("Settings...", #selector(menuSettings), ",", target: self),
+            .separator(),
+            item("Hide Worklog", #selector(NSApplication.hide(_:)), "h"),
+            item("Quit Worklog", #selector(NSApplication.terminate(_:)), "q"),
+        ])
+        submenu("File", [
+            item("New Page", #selector(menuNewPage), "n", target: self),
+            item("Today", #selector(menuToday), "t", target: self),
+            item("Search All Notes", #selector(menuSearch), "f", [.command, .shift], target: self),
+            item("Open Weekly Notes in Apple Notes", #selector(menuOpenNote), "w", [.command, .shift], target: self),
+            .separator(),
+            item("Close Window", #selector(NSWindow.performClose(_:)), "w"),
+        ])
+        // Standard selectors so copy, paste, undo and find work in the editor.
+        submenu("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            item("Find...", #selector(NSTextView.performFindPanelAction(_:)), "f", tag: Int(NSFindPanelAction.showFindPanel.rawValue)),
+        ])
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
+        let windowItem = NSMenuItem()
+        windowItem.submenu = windowMenu
+        main.addItem(windowItem)
+        NSApp.windowsMenu = windowMenu
         return main
     }
 }

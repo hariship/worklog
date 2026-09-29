@@ -72,7 +72,8 @@ struct PopoverView: View {
                     .foregroundStyle(weekly ? Color.white : Color.secondary)
             }
             .buttonStyle(.plain)
-            .help(weekly ? "Also added to \(notes.noteName). Click to turn off." : "Click to also add to \(notes.noteName).")
+            .help(weekly ? "Lines you log (Return) are also added to \(notes.noteName). Timers are not. Click to turn off."
+                      : "Click to also add logged lines to \(notes.noteName).")
             Button { submit(startTimer: true) } label: { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -267,6 +268,7 @@ struct PopoverView: View {
             Menu {
                 Button("Search", action: openSearch)
                 Button("Open folder", action: revealFolder)
+                Button("Open \(notes.noteName)") { notes.open(notes.noteName) }
                 Button("Send this week to \(notes.noteName)") { notes.sendWeek(monday: NotesSync.monday(of: Date())) }
                 Button("Settings...", action: openSettings)
                 Divider()
@@ -287,13 +289,14 @@ struct PopoverView: View {
     private func submit(startTimer: Bool) {
         let text = draft.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
-        model.log(tagged(text), startTimer: startTimer)
+        // Only lines you log go to the note; timers are work tracking, not notes.
+        model.log(startTimer ? text : tagged(text), startTimer: startTimer)
         draft = ""
         if !startTimer { show("Logged at \(DayFile.clock(DayFile.minutesSinceMidnight(Date())))") }
     }
 
     private func start(_ text: String) {
-        model.log(tagged(text), startTimer: true)
+        model.log(text, startTimer: true)
         draft = ""
     }
 
