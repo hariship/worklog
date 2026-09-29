@@ -3,6 +3,7 @@ import WorklogCore
 
 struct SettingsView: View {
     @ObservedObject var tick: TickTickModel
+    @ObservedObject var notes: NotesSync
     let root: URL
 
     @State private var clientId = ""
@@ -13,6 +14,12 @@ struct SettingsView: View {
         Form {
             Section("Notes folder") {
                 Text(root.path).textSelection(.enabled).foregroundStyle(.secondary)
+            }
+
+            Section("Apple Notes") {
+                TextField("Note name", text: $notes.noteName)
+                Text("Lines tagged #weekly are added to this note as numbered items. A summary of the week is added on Sunday evening, or from the ⋯ menu.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("TickTick") {
@@ -39,7 +46,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 500)
         .onAppear { clientId = tick.clientId }
     }
 

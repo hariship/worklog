@@ -18,6 +18,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Worklog adds your #weekly lines and a weekly summary to a note in Apple Notes.</string>
 </dict></plist>
 PLIST
 codesign --force --sign - "$APP"

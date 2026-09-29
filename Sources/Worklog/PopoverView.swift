@@ -6,13 +6,16 @@ import WorklogCore
 struct PopoverView: View {
     @ObservedObject var model: WorklogModel
     @ObservedObject var tick: TickTickModel
+    @ObservedObject var notes: NotesSync
     var openDay: () -> Void
     var openSearch: () -> Void
     var revealFolder: () -> Void
     var openSettings: () -> Void
 
     @State private var draft = ""
-    @State private var flash: String?
+    /// Sends the line to the Apple Notes note too. On by default, remembers the last choice.
+    @AppStorage("weeklyChip") private var weekly = true
+    @State private var flash: (text: String, isError: Bool)?
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -30,6 +33,9 @@ struct PopoverView: View {
             footer
         }
         .frame(width: 360)
+        .onChange(of: notes.message?.at) {
+            if let m = notes.message { show(m.text, isError: m.isError) }
+        }
         .onAppear {
             inputFocused = true
             tick.refresh(minAge: 60)
@@ -45,6 +51,15 @@ struct PopoverView: View {
                 .font(.title3)
                 .focused($inputFocused)
                 .onSubmit { submit(startTimer: false) }
+            Button { weekly.toggle() } label: {
+                Text("#weekly")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(weekly ? Color.accentColor : Color.secondary.opacity(0.15)))
+                    .foregroundStyle(weekly ? Color.white : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(weekly ? "Also added to \(notes.noteName). Click to turn off." : "Click to also add to \(notes.noteName).")
             Button { submit(startTimer: true) } label: { Image(systemName: "play.fill") }
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -114,8 +129,9 @@ struct PopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Text(flash ?? "\(DayFile.duration(model.todayMinutes)) today")
-                .foregroundStyle(flash == nil ? Color.secondary : Color.green)
+            Text(flash?.text ?? "\(DayFile.duration(model.todayMinutes)) today")
+                .foregroundStyle(flash == nil ? Color.secondary : flash!.isError ? Color.red : Color.green)
+                .lineLimit(2)
                 .monospacedDigit()
             Spacer()
             Button("Open log", systemImage: "arrow.up.right.square", action: openDay)
@@ -123,6 +139,7 @@ struct PopoverView: View {
             Menu {
                 Button("Search", action: openSearch)
                 Button("Open folder", action: revealFolder)
+                Button("Send this week to \(notes.noteName)") { notes.sendWeek(monday: NotesSync.monday(of: Date())) }
                 Button("Settings...", action: openSettings)
                 Divider()
                 Button("Quit Worklog") { NSApp.terminate(nil) }
@@ -142,19 +159,23 @@ struct PopoverView: View {
     private func submit(startTimer: Bool) {
         let text = draft.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
-        model.log(text, startTimer: startTimer)
+        model.log(tagged(text), startTimer: startTimer)
         draft = ""
         if !startTimer { show("Logged at \(DayFile.clock(DayFile.minutesSinceMidnight(Date())))") }
     }
 
     private func start(_ text: String) {
-        model.log(text, startTimer: true)
+        model.log(tagged(text), startTimer: true)
         draft = ""
     }
 
+    private func tagged(_ text: String) -> String {
+        weekly && !DayFile.tags(in: text).contains(NotesHTML.weeklyTag) ? "\(text) #weekly" : text
+    }
+
     /// Point entries don't show in the popover any more, so confirm them briefly in the footer.
-    private func show(_ message: String) {
-        flash = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { if flash == message { flash = nil } }
+    private func show(_ message: String, isError: Bool = false) {
+        flash = (message, isError)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (isError ? 6 : 2)) { if flash?.text == message { flash = nil } }
     }
 }

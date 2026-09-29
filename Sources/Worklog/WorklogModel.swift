@@ -16,6 +16,8 @@ final class WorklogModel: ObservableObject {
     /// Bumped on every write so open editors know to reload.
     @Published private(set) var revision = 0
     @Published var lastError: String?
+    /// Called after a line is written, with its text (used to forward `#weekly` lines).
+    var onLogged: ((String) -> Void)?
 
     struct Timer: Identifiable {
         var id: String { "\(day.timeIntervalSince1970)-\(entry.start)-\(entry.text)" }
@@ -44,6 +46,7 @@ final class WorklogModel: ObservableObject {
         let minute = DayFile.minutesSinceMidnight(at)
         let line = startTimer ? DayFile.runningLine(at: minute, text) : DayFile.pointLine(at: minute, text)
         write(at) { DayFile.appending(line, to: $0) }
+        if lastError == nil { onLogged?(text) }
     }
 
     func stop(_ timer: Timer, at: Date = Date()) {

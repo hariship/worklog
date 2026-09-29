@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = WorklogModel()
     private let nav = Navigation()
     private let tick = TickTickModel()
+    private lazy var notes = NotesSync(store: model.store)
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -31,11 +32,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(rootView: PopoverView(
             model: model,
             tick: tick,
+            notes: notes,
             openDay: { [weak self] in self?.openWindow(search: false) },
             openSearch: { [weak self] in self?.openWindow(search: true) },
             revealFolder: { [weak self] in self?.revealFolder() },
             openSettings: { [weak self] in self?.openSettings() }
         ))
+
+        model.onLogged = { [weak self] text in
+            if DayFile.tags(in: text).contains(NotesHTML.weeklyTag) { self?.notes.appendItem(text) }
+        }
+        if ProcessInfo.processInfo.environment["WORKLOG_SELFTEST"] == "1" {
+            // Debug: exercise the real #weekly and week-summary paths against $WORKLOG_NOTE, then quit.
+            model.log("Worklog self-test line #weekly", startTimer: false)
+            notes.sendWeek(monday: NotesSync.monday(of: Date()))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { NSApp.terminate(nil) }
+        } else {
+            notes.sendDueWeek()
+        }
 
         model.objectWillChange
             .receive(on: RunLoop.main)
@@ -101,12 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSettings() {
         popover.performClose(nil)
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(tick: tick, root: model.store.root)))
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(tick: tick, notes: notes, root: model.store.root)))
             w.title = "Worklog Settings"
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
             // A grouped Form has no intrinsic height; without this the window is just a title bar.
-            w.setContentSize(NSSize(width: 480, height: 420))
+            w.setContentSize(NSSize(width: 480, height: 500))
             w.center()
             settingsWindow = w
         }
